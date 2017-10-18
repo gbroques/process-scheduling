@@ -11,24 +11,21 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <sys/sem.h>
+#include "structs.h"
+#include "oss.h"
 
-static int setup_interval_timer(int time);
-static int setup_interrupt(void);
-static void free_shared_memory(void);
-static void free_shared_memory_and_abort(int s);
-static void print_help_message(char* executable_name,
-                               char* log_file);
-static int is_required_argument(char optopt);
-static void print_required_argument_message(char optopt);
-static int get_clock_shared_segment_size(void);
-static void attach_to_shared_memory(void);
-static void get_shared_memory(void);
-static void fork_and_exec_child(void);
+// CONSTANTS
+#define MAX_PROCESSES 18
+#define NANO_SECONDS_PER_SECOND 1000000000;
 
-static unsigned int clock_segment_id;
-static unsigned int* clock_shared_memory;
+// GLOBALS
+static unsigned int clock_seg_id;
+static struct my_clock* clock_shm;
 
-const int NANO_SECONDS_PER_SECOND = 1000000000;
+static unsigned int pcb_seg_id;
+static struct pcb** pcb_shm;
+
+static int pcb_shm_ids[MAX_PROCESSES];
 
 int main(int argc, char* argv[]) {
   int help_flag = 0;
@@ -68,11 +65,6 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
-  if (setup_interval_timer(60) == -1) {
-    perror("Faled to set up the ITIMER_PROF interval timer");
-    return EXIT_FAILURE;
-  }
-
   FILE* fp;
   fp = fopen(log_file, "w+");
 
@@ -81,41 +73,46 @@ int main(int argc, char* argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  signal(SIGINT, free_shared_memory_and_abort);
+  signal(SIGINT, free_shm_and_abort);
 
-  get_shared_memory();
+  clock_seg_id = get_clock_shm();
+  clock_shm = attach_to_clock_shm(clock_seg_id);
 
-  attach_to_shared_memory();
+  // Simulate setup overhead by initializing clock to 1 second
+  clock_shm->seconds = 1;
 
-  fork_and_exec_child();
+
+  pcb_seg_id = get_pcb_shm();
+  pcb_shm = attach_to_pcb_shm(pcb_seg_id);
+
+  fork_and_exec_child(0);
 
   int status;
   pid_t child = wait(&status);
   fprintf(stderr, "Child %d exited with status code %d\n", child, status);
 
-  free_shared_memory();
+  free_shm();
 
   return EXIT_SUCCESS;
-}
-
-static int get_clock_shared_segment_size() {
-  return 2 * sizeof(int);
 }
 
 /**
  * Frees all allocated shared memory
  */
-static void free_shared_memory(void) {
-  shmdt(clock_shared_memory);
-  shmctl(clock_segment_id, IPC_RMID, 0);
+static void free_shm(void) {
+  shmdt(clock_shm);
+  shmctl(clock_seg_id, IPC_RMID, 0);
+
+  shmdt(pcb_shm);
+  shmctl(pcb_seg_id, IPC_RMID, 0);
 }
 
 
 /**
  * Free shared memory and abort program
  */
-static void free_shared_memory_and_abort(int s) {
-  free_shared_memory();
+static void free_shm_and_abort(int s) {
+  free_shm();
   abort();
 }
 
@@ -125,23 +122,9 @@ static void free_shared_memory_and_abort(int s) {
  */
 static int setup_interrupt(void) {
   struct sigaction act;
-  act.sa_handler = free_shared_memory_and_abort;
+  act.sa_handler = free_shm_and_abort;
   act.sa_flags = 0;
   return (sigemptyset(&act.sa_mask) || sigaction(SIGPROF, &act, NULL));
-}
-
-/**
- * Sets up an interval timer
- *
- * @param time The duration of the timer
- * @return Zero on success. -1 on error.
- */
-static int setup_interval_timer(int time) {
-  struct itimerval value;
-  value.it_interval.tv_sec = time;
-  value.it_interval.tv_usec = 0;
-  value.it_value = value.it_interval;
-  return (setitimer(ITIMER_PROF, &value, NULL));
 }
 
 /**
@@ -190,52 +173,105 @@ static void print_required_argument_message(char option) {
 
 /**
  * Allocates shared memory for a simulated clock.
- * Populates clock_segment_id with a
- * shared memory segment ID.
+ * 
+ * @return The shared memory segment ID
  */
-static void get_shared_memory(void) {
-  int shared_segment_size = get_clock_shared_segment_size();
-  clock_segment_id = shmget(IPC_PRIVATE, shared_segment_size,
+static int get_clock_shm(void) {
+  int id = shmget(IPC_PRIVATE, sizeof(struct my_clock),
     IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
 
-  if (clock_segment_id == -1) {
-    perror("Failed to get shared memory");
+  if (id == -1) {
+    perror("Failed to get shared memory for clock");
     exit(EXIT_FAILURE);
   }
+  return id;
 }
 
 /**
  * Attaches to the clock shared memory segment.
- * Populates clock_shared_memory with a reference
- * to its appropriate memory location.
+ * 
+ * @return A pointer to the clock in shared memory.
  */
-static void attach_to_shared_memory(void) {
-  clock_shared_memory = (unsigned int*) shmat(clock_segment_id, 0, 0);
+static struct my_clock* attach_to_clock_shm(int id) {
+  void* clock_shm = shmat(id, 0, 0);
 
-  if (*clock_shared_memory == -1) {
-    perror("Failed to attach to shared memory");
+  if (*((int*) clock_shm) == -1) {
+    perror("Failed to attach to clock shared memory");
     exit(EXIT_FAILURE);
+  }
+
+  return (struct my_clock*) clock_shm;
+}
+
+/**
+ * Allocates shared memory for multiple process control blocks.
+ * 
+ * @return The shared memory segment ID
+ */
+static int get_pcb_shm(void) {
+  int segment_size = sizeof(struct pcb) * MAX_PROCESSES;
+  int id = shmget(IPC_PRIVATE, segment_size,
+    IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+
+  if (id == -1) {
+    perror("Failed to get shared memory for process control blocks");
+    exit(EXIT_FAILURE);
+  }
+  return id;
+}
+
+/**
+ * Attaches to the shared memory segment for process control blocks.
+ * 
+ * @return A pointer to the clock in shared memory.
+ */
+static struct pcb** attach_to_pcb_shm(int id) {
+  void* pcb_shm = shmat(id, 0, 0);
+
+  if (*((int*) pcb_shm) == -1) {
+    perror("Failed to attach to clock shared memory");
+    exit(EXIT_FAILURE);
+  }
+
+  return (struct pcb**) pcb_shm;
+}
+
+static void fork_and_exec_child(int proc_id) {
+  pcb_shm_ids[proc_id] = 1;
+  pid_t pid = fork();
+
+  if (pid == -1) {
+    perror("Failed to fork");
+    exit(EXIT_FAILURE);
+  }
+
+  if (pid == 0) { // Child
+    char proc_id_string[12];
+    char clock_seg_id_string[12];
+    char pcb_seg_id_string[12];
+    sprintf(proc_id_string, "%d", proc_id);
+    sprintf(clock_seg_id_string, "%d", clock_seg_id);
+    sprintf(pcb_seg_id_string, "%d", pcb_seg_id);
+
+    execlp(
+      "user",
+      "user",
+      proc_id_string,
+      clock_seg_id_string,
+      pcb_seg_id_string,
+      (char*) NULL
+    );
+    perror("Failed to exec");
+    _exit(EXIT_FAILURE);
   }
 }
 
-static void fork_and_exec_child(void) {
-    pid_t pid = fork();
-
-    if (pid == -1) {
-      perror("Failed to fork");
-      exit(EXIT_FAILURE);
+static int is_proc_table_full() {
+  int i;
+  for (i = 0; i < MAX_PROCESSES; i++) {
+    if (pcb_shm_ids[i] == 0) {
+      return 0;
     }
-
-    if (pid == 0) { // Child
-      char clock_segment_id_string[12];
-      sprintf(clock_segment_id_string, "%d", clock_segment_id);
-      execlp(
-        "user",
-        "user",
-        clock_segment_id_string,
-        (char*) NULL
-      );
-      perror("Failed to exec");
-      _exit(EXIT_FAILURE);
-    }
+  }
+  return 1;
 }
