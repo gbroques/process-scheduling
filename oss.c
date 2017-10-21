@@ -11,12 +11,14 @@
 #include <sys/stat.h>
 #include <ctype.h>
 #include <sys/sem.h>
+#include <time.h>
 #include "structs.h"
 #include "oss.h"
 
 // CONSTANTS
-#define MAX_PROCESSES 18
-#define NANO_SECONDS_PER_SECOND 1000000000;
+#define MAX_RUNNING_PROCS 18
+#define NANO_SECS_PER_SEC 1000000000
+#define TOTAL_PROCS = 100
 
 // GLOBALS
 static unsigned int clock_seg_id;
@@ -25,7 +27,14 @@ static struct my_clock* clock_shm;
 static unsigned int pcb_seg_id;
 static struct pcb** pcb_shm;
 
-static int pcb_shm_ids[MAX_PROCESSES];
+static unsigned int sched_block_seg_id;
+static struct sched_block* sched_block_shm;
+
+static int pcb_shm_ids[MAX_RUNNING_PROCS];
+
+static struct my_clock last_created_at;
+
+int num_procs_completed = 0;
 
 int main(int argc, char* argv[]) {
   int help_flag = 0;
@@ -65,6 +74,8 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
+  srand(time(NULL));
+
   FILE* fp;
   fp = fopen(log_file, "w+");
 
@@ -74,22 +85,43 @@ int main(int argc, char* argv[]) {
   }
 
   signal(SIGINT, free_shm_and_abort);
+  signal(SIGCHLD, handle_child_termination);
 
   clock_seg_id = get_clock_shm();
   clock_shm = attach_to_clock_shm(clock_seg_id);
 
   // Simulate setup overhead by initializing clock to 1 second
-  clock_shm->seconds = 1;
-
+  clock_shm->secs = 1;
 
   pcb_seg_id = get_pcb_shm();
   pcb_shm = attach_to_pcb_shm(pcb_seg_id);
 
-  fork_and_exec_child(0);
+  sched_block_seg_id = get_sched_block_shm();
+  sched_block_shm = attach_to_sched_block_shm(sched_block_seg_id);
 
-  int status;
-  pid_t child = wait(&status);
-  fprintf(stderr, "Child %d exited with status code %d\n", child, status);
+  fork_and_exec_child(0);
+  printf("[OSS] [%02d:%010d] Creating child %d\n", clock_shm->secs, clock_shm->nano_secs, 0);
+
+
+  int time_to_create_new_proc = rand() % 3;
+  while (1) {
+    update_clock_secs(clock_shm);
+    int proc_id = get_proc_id(); // -1 if process table is full
+    if (num_procs_completed == 5) { // TODO: Replace with TOTAL_PROCS
+      break;
+    } else if (is_past_last_created(time_to_create_new_proc) && proc_id != -1) {
+      printf("[OSS] [%02d:%010d] Creating child %d\n", clock_shm->secs, clock_shm->nano_secs, proc_id);
+      fork_and_exec_child(proc_id);
+      last_created_at.secs = clock_shm->secs;
+      last_created_at.nano_secs = clock_shm->nano_secs;
+      time_to_create_new_proc = rand() % 3;
+      clock_shm->nano_secs += 2;
+    } else {
+      // Schedule process
+        // Put process ID and time quantum in shared memory
+      clock_shm->nano_secs += rand() % 1001;
+    }
+  }
 
   free_shm();
 
@@ -105,6 +137,9 @@ static void free_shm(void) {
 
   shmdt(pcb_shm);
   shmctl(pcb_seg_id, IPC_RMID, 0);
+
+  shmdt(sched_block_shm);
+  shmctl(sched_block_seg_id, IPC_RMID, 0);
 }
 
 
@@ -193,7 +228,7 @@ static int get_clock_shm(void) {
  * @return A pointer to the clock in shared memory.
  */
 static struct my_clock* attach_to_clock_shm(int id) {
-  void* clock_shm = shmat(id, 0, 0);
+  void* clock_shm = shmat(id, NULL, 0);
 
   if (*((int*) clock_shm) == -1) {
     perror("Failed to attach to clock shared memory");
@@ -209,7 +244,7 @@ static struct my_clock* attach_to_clock_shm(int id) {
  * @return The shared memory segment ID
  */
 static int get_pcb_shm(void) {
-  int segment_size = sizeof(struct pcb) * MAX_PROCESSES;
+  int segment_size = sizeof(struct pcb) * MAX_RUNNING_PROCS;
   int id = shmget(IPC_PRIVATE, segment_size,
     IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
 
@@ -223,17 +258,50 @@ static int get_pcb_shm(void) {
 /**
  * Attaches to the shared memory segment for process control blocks.
  * 
- * @return A pointer to the clock in shared memory.
+ * @return A pointer to an array of process control blocks in shared memory.
  */
 static struct pcb** attach_to_pcb_shm(int id) {
-  void* pcb_shm = shmat(id, 0, 0);
+  void* pcb_shm = shmat(id, NULL, 0);
 
   if (*((int*) pcb_shm) == -1) {
-    perror("Failed to attach to clock shared memory");
+    perror("Failed to attach to process control block shared memory");
     exit(EXIT_FAILURE);
   }
 
   return (struct pcb**) pcb_shm;
+}
+
+/**
+ * Allocates shared memory for a shedule quantum.
+ * See sched_block definition in structs.h
+ * 
+ * @return The shared memory segment ID
+ */
+static int get_sched_block_shm(void) {
+  int id = shmget(IPC_PRIVATE, sizeof(struct sched_block),
+    IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+
+  if (id == -1) {
+    perror("Failed to get shared memory for schedule block");
+    exit(EXIT_FAILURE);
+  }
+  return id;
+}
+
+/**
+ * Attaches to the shared memory segment for the schedule block.
+ * 
+ * @return A pointer to the schedule block in shared memory.
+ */
+static struct sched_block* attach_to_sched_block_shm(int id) {
+  void* sched_block_shm = shmat(id, NULL, 0);
+
+  if (*((int*) sched_block_shm) == -1) {
+    perror("Failed to attach to schedule block shared memory");
+    exit(EXIT_FAILURE);
+  }
+
+  return (struct sched_block*) sched_block_shm;
 }
 
 static void fork_and_exec_child(int proc_id) {
@@ -249,9 +317,11 @@ static void fork_and_exec_child(int proc_id) {
     char proc_id_string[12];
     char clock_seg_id_string[12];
     char pcb_seg_id_string[12];
+    char sched_block_seg_id_string[12];
     sprintf(proc_id_string, "%d", proc_id);
     sprintf(clock_seg_id_string, "%d", clock_seg_id);
     sprintf(pcb_seg_id_string, "%d", pcb_seg_id);
+    sprintf(sched_block_seg_id_string, "%d", sched_block_seg_id);
 
     execlp(
       "user",
@@ -259,6 +329,7 @@ static void fork_and_exec_child(int proc_id) {
       proc_id_string,
       clock_seg_id_string,
       pcb_seg_id_string,
+      sched_block_seg_id_string,
       (char*) NULL
     );
     perror("Failed to exec");
@@ -266,12 +337,50 @@ static void fork_and_exec_child(int proc_id) {
   }
 }
 
-static int is_proc_table_full() {
-  int i;
-  for (i = 0; i < MAX_PROCESSES; i++) {
-    if (pcb_shm_ids[i] == 0) {
-      return 0;
+void handle_child_termination(int signum) {
+  int status;
+  pid_t pid = wait(&status);
+
+  fprintf(
+    stderr,
+    "[OSS] [%02d:%010d] Child %d is terminating\n",
+    clock_shm->secs,
+    clock_shm->nano_secs,
+    pid
+  );
+
+  num_procs_completed++;
+}
+
+static int is_past_last_created(int seconds) {
+  int sec_past = clock_shm->secs - last_created_at.secs;
+  int ns_past = clock_shm->nano_secs - last_created_at.nano_secs;
+  int total_past = ns_past + (sec_past * NANO_SECS_PER_SEC);
+  if ((seconds * NANO_SECS_PER_SEC) < total_past) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+/**
+ * Get a currently available process ID.
+ *
+ * @return The process ID. -1 if the process table is full.
+ */
+static int get_proc_id() {
+  int proc_id;
+  for (proc_id = 0; proc_id < MAX_RUNNING_PROCS; proc_id++) {
+    if (pcb_shm_ids[proc_id] != 1) {
+      return proc_id;
     }
   }
-  return 1;
+  return -1;
+}
+
+static void update_clock_secs(struct my_clock* clock) {
+  if (clock->nano_secs >= NANO_SECS_PER_SEC) {
+    clock->secs += 1;
+    clock->nano_secs -= NANO_SECS_PER_SEC;
+  }
 }

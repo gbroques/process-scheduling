@@ -13,6 +13,11 @@ static int get_clock_shm(void);
 static struct my_clock* attach_to_clock_shm(int id);
 static int get_pcb_shm(void);
 static struct pcb** attach_to_pcb_shm(int id);
-static int is_proc_table_full();
+static void handle_child_termination(int signum);
+static int is_past_last_created(int seconds);
+static int get_proc_id();
+static int get_sched_block_shm(void);
+static struct sched_block* attach_to_sched_block_shm(int id);
+static void update_clock_secs(struct my_clock* clock);
 
 #endif
