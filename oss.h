@@ -1,6 +1,34 @@
 #ifndef OSS_H
 #define OSS_H
 
+/******************************************************************************
+ * STRUCTURES                                                                 *
+ ******************************************************************************/
+
+/*
+ * Multi-level Feedback Queue
+ * --------------------------*/
+struct my_mlfq {
+
+};
+
+// ============================================================================
+
+
+/******************************************************************************
+ * CONSTANTS                                                                  *
+ ******************************************************************************/
+
+#define MY_TIMESLICE 100000000; // 100 milliseconds in nano seconds
+#define ALPHA = 1;
+#define BETA = 2;
+
+// ============================================================================
+
+
+/******************************************************************************
+ * PROTOTYPES                                                                 *
+ ******************************************************************************/
 static int setup_interrupt(void);
 static void free_shm(void);
 static void free_shm_and_abort(int s);
@@ -19,5 +47,6 @@ static int get_proc_id();
 static int get_sched_block_shm(void);
 static struct sched_block* attach_to_sched_block_shm(int id);
 static void update_clock_secs(struct my_clock* clock);
+static void exec_linked_list_code();
 
 #endif

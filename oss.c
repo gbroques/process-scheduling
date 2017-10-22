@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <sys/sem.h>
 #include <time.h>
+#include <sys/queue.h>
 #include "structs.h"
 #include "oss.h"
 
@@ -35,6 +36,16 @@ static int pcb_shm_ids[MAX_RUNNING_PROCS];
 static struct my_clock last_created_at;
 
 int num_procs_completed = 0;
+
+LIST_HEAD(listhead, entry) head =
+    LIST_HEAD_INITIALIZER(head);
+
+struct listhead *headp;  // List head.
+
+struct entry {
+  int val;
+  LIST_ENTRY(entry) entries; // List.
+} *n1, *n2, *n3, *np, *np_temp;
 
 int main(int argc, char* argv[]) {
   int help_flag = 0;
@@ -75,6 +86,8 @@ int main(int argc, char* argv[]) {
   }
 
   srand(time(NULL));
+
+  exec_linked_list_code(); // TODO: Turn into a priority queue
 
   FILE* fp;
   fp = fopen(log_file, "w+");
@@ -124,6 +137,7 @@ int main(int argc, char* argv[]) {
   }
 
   free_shm();
+  fclose(fp);
 
   return EXIT_SUCCESS;
 }
@@ -383,4 +397,31 @@ static void update_clock_secs(struct my_clock* clock) {
     clock->secs += 1;
     clock->nano_secs -= NANO_SECS_PER_SEC;
   }
+}
+
+static void exec_linked_list_code() {
+  LIST_INIT(&head);                       /* Initialize the list. */
+
+  n1 = malloc(sizeof(struct entry));      /* Insert at the head. */
+  n1->val = 1;
+  LIST_INSERT_HEAD(&head, n1, entries);
+
+  n2 = malloc(sizeof(struct entry));      /* Insert after. */
+  n2->val = 2;
+  LIST_INSERT_AFTER(n1, n2, entries);
+
+  n3 = malloc(sizeof(struct entry));      /* Insert before. */
+  n3->val = 4;
+  LIST_INSERT_BEFORE(n2, n3, entries);
+
+  LIST_FOREACH(np, &head, entries) /* Forward traversal. */
+    printf("%d\n", np->val);
+
+  n1 = LIST_FIRST(&head); /* Faster List Deletion. */
+  while (n1 != NULL) {
+    n2 = LIST_NEXT(n1, entries);
+    free(n1);
+    n1 = n2;
+  }
+  LIST_INIT(&head);
 }
