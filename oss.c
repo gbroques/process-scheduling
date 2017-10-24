@@ -10,10 +10,10 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <ctype.h>
-#include <sys/sem.h>
 #include <time.h>
 #include <sys/queue.h>
 #include "structs.h"
+#include "sem.h"
 #include "oss.h"
 
 // CONSTANTS
@@ -28,24 +28,34 @@ static struct my_clock* clock_shm;
 static unsigned int pcb_seg_id;
 static struct pcb** pcb_shm;
 
-static unsigned int sched_block_seg_id;
-static struct sched_block* sched_block_shm;
+static unsigned int curr_sched_seg_id;
+static struct curr_sched* curr_sched_shm;
 
-static int pcb_shm_ids[MAX_RUNNING_PROCS];
+static char pcb_shm_ids[MAX_RUNNING_PROCS];
 
 static struct my_clock last_created_at;
 
 int num_procs_completed = 0;
+static int sem_id;
 
-LIST_HEAD(listhead, entry) head =
-    LIST_HEAD_INITIALIZER(head);
+TAILQ_HEAD(tailhead, entry) high_prio_queue =
+    TAILQ_HEAD_INITIALIZER(high_prio_queue);
 
-struct listhead *headp;  // List head.
+struct tailhead *headp;  /* Tail queue head. */
 
 struct entry {
-  int val;
-  LIST_ENTRY(entry) entries; // List.
-} *n1, *n2, *n3, *np, *np_temp;
+  pid_t pid;
+  TAILQ_ENTRY(entry) entries;  /* Tail queue. */
+} *n1, *n2;
+
+void print_queue() {
+  struct entry* np;
+  printf("[OSS] Queue: [ ");
+  TAILQ_FOREACH_REVERSE(np, &high_prio_queue, tailhead, entries)
+      printf("%d ", np->pid);
+
+  printf("]\n");
+}
 
 int main(int argc, char* argv[]) {
   int help_flag = 0;
@@ -87,7 +97,7 @@ int main(int argc, char* argv[]) {
 
   srand(time(NULL));
 
-  exec_linked_list_code(); // TODO: Turn into a priority queue
+  TAILQ_INIT(&high_prio_queue);
 
   FILE* fp;
   fp = fopen(log_file, "w+");
@@ -100,6 +110,14 @@ int main(int argc, char* argv[]) {
   signal(SIGINT, free_shm_and_abort);
   signal(SIGCHLD, handle_child_termination);
 
+  sem_id = allocate_sem(IPC_PRIVATE, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+
+  int init_sem_success = init_sem(sem_id, 0);
+  if (init_sem_success == -1) {
+    perror("Faled to initilaize binary semaphore");
+    return EXIT_FAILURE;
+  }
+
   clock_seg_id = get_clock_shm();
   clock_shm = attach_to_clock_shm(clock_seg_id);
 
@@ -109,11 +127,11 @@ int main(int argc, char* argv[]) {
   pcb_seg_id = get_pcb_shm();
   pcb_shm = attach_to_pcb_shm(pcb_seg_id);
 
-  sched_block_seg_id = get_sched_block_shm();
-  sched_block_shm = attach_to_sched_block_shm(sched_block_seg_id);
+  curr_sched_seg_id = get_curr_sched_shm();
+  curr_sched_shm = attach_to_curr_sched_shm(curr_sched_seg_id);
 
-  fork_and_exec_child(0);
   printf("[OSS] [%02d:%010d] Creating child %d\n", clock_shm->secs, clock_shm->nano_secs, 0);
+  fork_and_exec_child(0);
 
 
   int time_to_create_new_proc = rand() % 3;
@@ -121,6 +139,7 @@ int main(int argc, char* argv[]) {
     update_clock_secs(clock_shm);
     int proc_id = get_proc_id(); // -1 if process table is full
     if (num_procs_completed == 5) { // TODO: Replace with TOTAL_PROCS
+      printf("[OSS] [%02d:%010d] END WHILE 5 processes completed\n", clock_shm->secs, clock_shm->nano_secs);
       break;
     } else if (is_past_last_created(time_to_create_new_proc) && proc_id != -1) {
       printf("[OSS] [%02d:%010d] Creating child %d\n", clock_shm->secs, clock_shm->nano_secs, proc_id);
@@ -130,13 +149,26 @@ int main(int argc, char* argv[]) {
       time_to_create_new_proc = rand() % 3;
       clock_shm->nano_secs += 2;
     } else {
-      // Schedule process
-        // Put process ID and time quantum in shared memory
+      struct entry* bout_to_sched = TAILQ_FIRST(&high_prio_queue);
+      if (bout_to_sched != NULL)
+        printf("[OSS] [%02d:%010d] Scheduling process %d\n", clock_shm->secs, clock_shm->nano_secs, bout_to_sched->pid);
+
+      int scheduled_pid = schedule_process();
       clock_shm->nano_secs += rand() % 1001;
+      if (scheduled_pid != -1) {
+        printf("[OSS] [%02d:%010d] Waiting on %d\n", clock_shm->secs, clock_shm->nano_secs, scheduled_pid);
+        sem_wait(sem_id);
+      }
     }
   }
 
   free_shm();
+  n1 = TAILQ_FIRST(&high_prio_queue);  /* Faster TailQ Deletion. */
+  while (n1 != NULL) {
+    n2 = TAILQ_NEXT(n1, entries);
+    free(n1);
+    n1 = n2;
+  }
   fclose(fp);
 
   return EXIT_SUCCESS;
@@ -152,8 +184,14 @@ static void free_shm(void) {
   shmdt(pcb_shm);
   shmctl(pcb_seg_id, IPC_RMID, 0);
 
-  shmdt(sched_block_shm);
-  shmctl(sched_block_seg_id, IPC_RMID, 0);
+  shmdt(curr_sched_shm);
+  shmctl(curr_sched_seg_id, IPC_RMID, 0);
+
+  int deallocate_sem_success = deallocate_sem(sem_id);
+  if (deallocate_sem_success == -1) {
+    perror("Failed to deallocate binary semaphore");
+    exit(EXIT_FAILURE);
+  }
 }
 
 
@@ -286,17 +324,17 @@ static struct pcb** attach_to_pcb_shm(int id) {
 }
 
 /**
- * Allocates shared memory for a shedule quantum.
- * See sched_block definition in structs.h
+ * Allocates shared memory for the currently scheduled process.
+ * See curr_sched definition in structs.h
  * 
  * @return The shared memory segment ID
  */
-static int get_sched_block_shm(void) {
-  int id = shmget(IPC_PRIVATE, sizeof(struct sched_block),
+static int get_curr_sched_shm(void) {
+  int id = shmget(IPC_PRIVATE, sizeof(struct curr_sched),
     IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
 
   if (id == -1) {
-    perror("Failed to get shared memory for schedule block");
+    perror("Failed to get shared memory for currently scheduled process");
     exit(EXIT_FAILURE);
   }
   return id;
@@ -307,19 +345,20 @@ static int get_sched_block_shm(void) {
  * 
  * @return A pointer to the schedule block in shared memory.
  */
-static struct sched_block* attach_to_sched_block_shm(int id) {
-  void* sched_block_shm = shmat(id, NULL, 0);
+static struct curr_sched* attach_to_curr_sched_shm(int id) {
+  void* curr_sched_shm = shmat(id, NULL, 0);
 
-  if (*((int*) sched_block_shm) == -1) {
-    perror("Failed to attach to schedule block shared memory");
+  if (*((int*) curr_sched_shm) == -1) {
+    perror("Failed to attach to currently scheduled process shared memory");
     exit(EXIT_FAILURE);
   }
 
-  return (struct sched_block*) sched_block_shm;
+  return (struct curr_sched*) curr_sched_shm;
 }
 
 static void fork_and_exec_child(int proc_id) {
   pcb_shm_ids[proc_id] = 1;
+  enqueue_process(proc_id, 0);
   pid_t pid = fork();
 
   if (pid == -1) {
@@ -331,11 +370,13 @@ static void fork_and_exec_child(int proc_id) {
     char proc_id_string[12];
     char clock_seg_id_string[12];
     char pcb_seg_id_string[12];
-    char sched_block_seg_id_string[12];
+    char curr_sched_seg_id_string[12];
+    char sem_id_string[12];
     sprintf(proc_id_string, "%d", proc_id);
     sprintf(clock_seg_id_string, "%d", clock_seg_id);
     sprintf(pcb_seg_id_string, "%d", pcb_seg_id);
-    sprintf(sched_block_seg_id_string, "%d", sched_block_seg_id);
+    sprintf(curr_sched_seg_id_string, "%d", curr_sched_seg_id);
+    sprintf(sem_id_string, "%d", sem_id);
 
     execlp(
       "user",
@@ -343,7 +384,8 @@ static void fork_and_exec_child(int proc_id) {
       proc_id_string,
       clock_seg_id_string,
       pcb_seg_id_string,
-      sched_block_seg_id_string,
+      curr_sched_seg_id_string,
+      sem_id_string,
       (char*) NULL
     );
     perror("Failed to exec");
@@ -399,29 +441,56 @@ static void update_clock_secs(struct my_clock* clock) {
   }
 }
 
-static void exec_linked_list_code() {
-  LIST_INIT(&head);                       /* Initialize the list. */
-
-  n1 = malloc(sizeof(struct entry));      /* Insert at the head. */
-  n1->val = 1;
-  LIST_INSERT_HEAD(&head, n1, entries);
-
-  n2 = malloc(sizeof(struct entry));      /* Insert after. */
-  n2->val = 2;
-  LIST_INSERT_AFTER(n1, n2, entries);
-
-  n3 = malloc(sizeof(struct entry));      /* Insert before. */
-  n3->val = 4;
-  LIST_INSERT_BEFORE(n2, n3, entries);
-
-  LIST_FOREACH(np, &head, entries) /* Forward traversal. */
-    printf("%d\n", np->val);
-
-  n1 = LIST_FIRST(&head); /* Faster List Deletion. */
-  while (n1 != NULL) {
-    n2 = LIST_NEXT(n1, entries);
-    free(n1);
-    n1 = n2;
+static int schedule_process() {
+  int pid = dequeue_process(0);
+  if (pid != -1) {
+    curr_sched_shm->proc_id = pid;
+    curr_sched_shm->time_quantum = MY_TIMESLICE;
   }
-  LIST_INIT(&head);
+  return pid;
+}
+
+static void enqueue_process(int proc_id, int priority) {
+  struct entry* proc = malloc(sizeof(struct entry));
+  proc->pid = proc_id;
+  switch (priority) {
+    case 0:
+      printf("[OSS] Enqueue child %d\n", proc_id);
+      TAILQ_INSERT_TAIL(&high_prio_queue, proc, entries);
+      print_queue();
+      break;
+    case 1:
+
+      break;
+    case 2:
+
+      break;
+
+  }
+}
+
+static int dequeue_process(int priority) {
+  int pid = -1;
+  struct entry* np;
+  switch (priority) {
+    case 0:
+      np = TAILQ_FIRST(&high_prio_queue);
+      if (np != NULL) {
+        pid = np->pid;
+        printf("[OSS] Dequeue child %d\n", pid);
+        TAILQ_REMOVE(&high_prio_queue, np, entries);
+        free(np);
+        print_queue();
+      }
+
+      break;
+    case 1:
+
+      break;
+    case 2:
+
+      break;
+
+  }
+  return pid;
 }

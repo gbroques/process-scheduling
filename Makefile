@@ -4,9 +4,9 @@ EXECS = oss user
 
 all: $(EXECS)
 
-oss: structs.h
+oss: structs.h sem.c
 
-user: structs.h
+user: structs.h sem.c
 
 clean:
 	rm -f *.o $(EXECS)

@@ -44,9 +44,11 @@ static struct pcb** attach_to_pcb_shm(int id);
 static void handle_child_termination(int signum);
 static int is_past_last_created(int seconds);
 static int get_proc_id();
-static int get_sched_block_shm(void);
-static struct sched_block* attach_to_sched_block_shm(int id);
+static int get_curr_sched_shm(void);
+static struct curr_sched* attach_to_curr_sched_shm(int id);
 static void update_clock_secs(struct my_clock* clock);
-static void exec_linked_list_code();
+static int schedule_process();
+static void enqueue_process(int proc_id, int priority);
+static int dequeue_process(int priority);
 
 #endif
