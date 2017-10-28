@@ -19,7 +19,6 @@ struct my_clock {
  * Contains information for scheduling child processes.
  * ----------------------------------------------------*/
 struct pcb {
-  unsigned int proc_id;
   struct my_clock total_time_used;     // Total CPU time used
   struct my_clock total_system_time;   // Total time in the system
   struct my_clock last_burst_time;     // Time used during the last burst

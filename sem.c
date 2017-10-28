@@ -26,14 +26,14 @@ int init_sem(int sem_id, int initial_val) {
  * @return The return value of semop
  */
 int sem_wait(int sem_id) {
- struct sembuf operations[1];
- /* Use the first (and only) semaphore. */
- operations[0].sem_num = 0;
- /* Decrement by 1. */
- operations[0].sem_op = -1;
- /* Permit undo'ing. */
- operations[0].sem_flg = SEM_UNDO;
- return semop(sem_id, operations, 1);
+  struct sembuf operations[1];
+  /* Use the first (and only) semaphore. */
+  operations[0].sem_num = 0;
+  /* Decrement by 1. */
+  operations[0].sem_op = -1;
+  /* Permit undo'ing. */
+  operations[0].sem_flg = SEM_UNDO;
+  return semop(sem_id, operations, 1);
 }
 
 /**
@@ -44,12 +44,12 @@ int sem_wait(int sem_id) {
  * @return The return value of semop
  */
 int sem_post(int sem_id) {
- struct sembuf operations[1];
- /* Use the first (and only) semaphore. */
- operations[0].sem_num = 0;
- /* Increment by 1. */
- operations[0].sem_op = 1;
- /* Permit undo'ing. */
- operations[0].sem_flg = SEM_UNDO;
- return semop(sem_id, operations, 1);
+  struct sembuf operations[1];
+  /* Use the first (and only) semaphore. */
+  operations[0].sem_num = 0;
+  /* Increment by 1. */
+  operations[0].sem_op = 1;
+  /* Permit undo'ing. */
+  operations[0].sem_flg = SEM_UNDO;
+  return semop(sem_id, operations, 1);
 }
