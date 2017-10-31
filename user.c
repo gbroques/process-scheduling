@@ -47,8 +47,7 @@ int main(int argc, char* argv[]) {
     start_time.nano_secs = clock_shm->nano_secs;
 
     printf(
-      "[USR] [%d] [%02d:%010d] Child %d waiting in ready queue\n",
-      getpid(),
+      "[USR] [%02d:%010d] Process %d waiting in ready queue\n",
       clock_shm->secs,
       clock_shm->nano_secs,
       proc_id
@@ -60,11 +59,21 @@ int main(int argc, char* argv[]) {
     int should_use_full_time_quantum = rand() % 2;
 
     unsigned int time_quantum;
-    if (should_use_full_time_quantum) {
+    if (pcb_shm[proc_id].was_interrupted) {
+      pcb_shm[proc_id].was_interrupted = 0;
+      time_quantum = pcb_shm[proc_id].remaining_time;
+      pcb_shm[proc_id].remaining_time = 0;
+      printf(
+        "[USR] [%02d:%010d] Process %d resuming. Scheduled to run for %d nanoseconds\n",
+        clock_shm->secs,
+        clock_shm->nano_secs,
+        proc_id,
+        time_quantum
+      );
+    } else if (should_use_full_time_quantum) {
       time_quantum = curr_sched_shm->time_quantum;
       printf(
-        "[USR] [%d] [%02d:%010d] Child %d using full time quantum %d nano seconds\n",
-        getpid(),
+        "[USR] [%02d:%010d] Process %d scheduled to run for %d nanoseconds\n",
         clock_shm->secs,
         clock_shm->nano_secs,
         proc_id,
@@ -73,12 +82,51 @@ int main(int argc, char* argv[]) {
     } else { // Use partial time quantum
       time_quantum = rand() % curr_sched_shm->time_quantum;
       printf(
-        "[USR] [%d] [%02d:%010d] Child %d using partial time quantum %d nano seconds\n",
-        getpid(),
+        "[USR] [%02d:%010d] Process %d scheduled to run for %d nanoseconds\n",
         clock_shm->secs,
         clock_shm->nano_secs,
         proc_id,
         time_quantum
+      );
+    }
+
+    // Wait for an event
+    if (curr_sched_shm->rand_sched_num == 2) {
+      int time_ran_for = rand() % time_quantum;
+      int time_left_to_run = time_quantum - time_ran_for;
+      pcb_shm[proc_id].was_interrupted = 1;
+      pcb_shm[proc_id].remaining_time = time_left_to_run;
+      time_quantum = rand() % time_quantum;
+      printf(
+        "[USR] [%02d:%010d] Process %d was interrupted by an event after running for %d nanoseconds\n",
+        clock_shm->secs,
+        clock_shm->nano_secs,
+        proc_id,
+        time_ran_for
+      );
+
+      // Add wait time to total system time
+      struct my_clock wait_time;
+      wait_time.secs = rand() % 6;
+      wait_time.nano_secs = rand() % 1001;
+      pcb_shm[proc_id].total_sys_time = add_clocks(
+        pcb_shm[proc_id].total_sys_time,
+        wait_time
+      );
+    }
+
+    // Preempted after using [1, 99] of time quantum
+    if (curr_sched_shm->rand_sched_num == 3) {
+      int time_ran_for = rand() % 99 + 1;
+      int time_left_to_run = time_quantum - time_ran_for;
+      pcb_shm[proc_id].was_interrupted = 1;
+      pcb_shm[proc_id].remaining_time = time_left_to_run;
+      printf(
+        "[USR] [%02d:%010d] Process %d was preempted after running for %d nanoseconds\n",
+        clock_shm->secs,
+        clock_shm->nano_secs,
+        proc_id,
+        time_ran_for
       );
     }
 
@@ -96,16 +144,18 @@ int main(int argc, char* argv[]) {
                                          time_quantum
                                        );
 
+    pcb_shm[proc_id].last_burst_time = time_quantum;
+
     int accumulated_cpu_time = get_nano_secs(pcb_shm[proc_id].total_cpu_time);
 
-    if (accumulated_cpu_time >= FIFTY_MILLISECS) {
+    // AND proccess is supposed to execute normally
+    if (accumulated_cpu_time >= FIFTY_MILLISECS &&
+        curr_sched_shm->rand_sched_num == 1) {
       is_process_complete = rand() % 2;
       if (is_process_complete) {
         pcb_shm[proc_id].ready_to_terminate = 1;
-
         printf(
-          "[USR] [%d] [%02d:%010d] Child %d ready to terminate\n",
-          getpid(),
+          "[USR] [%02d:%010d] Process %d ready to terminate\n",
           clock_shm->secs,
           clock_shm->nano_secs,
           proc_id
@@ -119,8 +169,7 @@ int main(int argc, char* argv[]) {
 
     if (!is_process_complete) {
       printf(
-        "[USR] [%d] [%02d:%010d] Child %d NOT ready to terminate\n",
-        getpid(),
+        "[USR] [%02d:%010d] Process %d NOT ready to terminate\n",
         clock_shm->secs,
         clock_shm->nano_secs,
         proc_id

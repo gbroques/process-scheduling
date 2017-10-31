@@ -19,4 +19,6 @@ int is_past_time(struct my_clock a, struct my_clock b);
 
 struct my_clock add_nano_secs_to_clock(struct my_clock clock, int nano_secs);
 
+struct my_clock add_clocks(struct my_clock a, struct my_clock b);
+
 #endif

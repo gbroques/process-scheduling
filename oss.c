@@ -205,8 +205,21 @@ int main(int argc, char* argv[]) {
         int scheduled_pid = dispatch_process();
         clock_shm->nano_secs += rand() % 1001;
         sem_wait(sem_id);
+        printf(
+          "[OSS] [%02d:%010d] Process %d ran for %d nanoseconds during last burst.\n",
+          clock_shm->secs,
+          clock_shm->nano_secs,
+          scheduled_pid,
+          pcb_shm[scheduled_pid].last_burst_time
+        );
         if (!pcb_shm[scheduled_pid].ready_to_terminate) {
-          printf("Enqueueing process %d\n", scheduled_pid);
+          printf(
+            "[OSS] [%02d:%010d] Putting process %d in queue %d.\n",
+            clock_shm->secs,
+            clock_shm->nano_secs,
+            scheduled_pid,
+            0
+          );
           enqueue_process(scheduled_pid, 0);
         } else {
           num_procs_completed++;
@@ -224,12 +237,21 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  // Wait for any remaining children to terminate
   pid_t pid;
   while ((pid = waitpid(-1, NULL, 0))) {
-   if (errno == ECHILD) {
+    if (errno == ECHILD) {
       break;
-   }
-}
+    }
+  }
+
+  /*----------------------------*
+   | TODO: Print report         |
+   |----------------------------|
+   | - Average turnaround time  |
+   | - Average wait time        |
+   | - How long CPU was idle    |
+   *----------------------------*/
 
   free_shm();
   free_queue();
@@ -410,11 +432,13 @@ static int dispatch_process() {
   if (pid != -1) {
     curr_sched_shm->proc_id = pid;
     curr_sched_shm->time_quantum = MY_TIMESLICE;
+    curr_sched_shm->rand_sched_num = get_rand_sched_num();
   }
   return pid;
 }
 
 static void enqueue_process(int proc_id, int priority) {
+  pcb_shm[proc_id].priority = priority;
   struct entry* proc = malloc(sizeof(struct entry));
   proc->pid = proc_id;
   switch (priority) {
@@ -510,21 +534,34 @@ static void free_queue() {
   }
 }
 
-static int schedule_process() {
-  int random_num = rand() % 4;
-  switch (random_num) {
-    case 0:
-      // Process terminates
-      break;
-    case 1:
-      // Process terminates at its time quantum
-      break;
-    case 2:
-      // Process waits for event
-      break;
-    case 3:
-      // Process gets preempted after using [1, 99] of quantum
-      break;
+/**
+ * Get a random number in the range [1, 3],
+ * to simulate the randomness of a real
+ * process scheduling environment.
+ *
+ *   - 1 means the process executes normally
+ *   - 2 means the process waits for an event
+ *   - 3 means the process gets preempted after using
+ *     [1, 99] of its time quantum
+ */
+static int get_rand_sched_num() {
+  int rand_sched_num = rand() % 3 + 1;
+  
+  // Make 1 a more likely outcome
+  int i; 
+  while (rand_sched_num != 1 && i < 3) {
+    rand_sched_num = rand() % 3 + 1;
+    i++;
   }
-  return random_num;
+  return rand_sched_num;
 }
+
+/**
+ * TODO: Write method to calculate average
+ *       wait time of processes in queue "X"
+ */
+
+/**
+ * TODO: Write method to move process to
+ *       another queue
+ */

@@ -45,6 +45,6 @@ static void enqueue_process(int proc_id, int priority);
 static int dequeue_process(int priority);
 static int is_queue_empty();
 static int peek(int priority);
-static int schedule_process();
+static int get_rand_sched_num();
 
 #endif

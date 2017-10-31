@@ -34,3 +34,15 @@ struct my_clock add_nano_secs_to_clock(struct my_clock clock, int nano_secs) {
   }
   return new_time;
 }
+
+/**
+ * Adds the time of two clocks together.
+ */
+struct my_clock add_clocks(struct my_clock a, struct my_clock b) {
+  struct my_clock new_clock;
+  new_clock.secs = a.secs + b.secs;
+  struct my_clock temp_clock = add_nano_secs_to_clock(a, b.nano_secs);
+  new_clock.secs += temp_clock.secs;
+  new_clock.nano_secs = temp_clock.nano_secs;
+  return new_clock;
+}
