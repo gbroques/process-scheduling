@@ -3,6 +3,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "ossshm.h"
 
 /**
@@ -59,7 +60,7 @@ int get_pcb_shm(int num_blocks) {
  * 
  * @return A pointer to an array of process control blocks in shared memory.
  */
-struct pcb** attach_to_pcb_shm(int id) {
+struct pcb* attach_to_pcb_shm(int id) {
   void* pcb_shm = shmat(id, NULL, 0);
 
   if (*((int*) pcb_shm) == -1) {
@@ -67,7 +68,7 @@ struct pcb** attach_to_pcb_shm(int id) {
     exit(EXIT_FAILURE);
   }
 
-  return (struct pcb**) pcb_shm;
+  return (struct pcb*) pcb_shm;
 }
 
 /**
@@ -110,7 +111,7 @@ void detach_from_clock_shm(struct my_clock* shm) {
   }
 }
 
-void detach_from_pcb_shm(struct pcb** shm) {
+void detach_from_pcb_shm(struct pcb* shm) {
   int return_value = shmdt(shm);
   if (return_value == -1) {
     perror("Failed to detach from process control block shared memory");

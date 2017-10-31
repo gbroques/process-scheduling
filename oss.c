@@ -22,6 +22,7 @@
 #include "sem.h"
 #include "oss.h"
 #include "ossshm.h"
+#include "myclock.h"
 
 /*
  * CONSTANTS
@@ -30,12 +31,8 @@
 // Maximum number of running processes at any given time
 #define MAX_RUNNING_PROCS 18
 
-// 1 * 10^9 nano seconds
-#define NANO_SECS_PER_SEC 1000000000
-
 // Total number of processes to be created
-#define MAX_PROCS 18
-
+#define MAX_PROCS 3
 
 /*
  * GLOBALS
@@ -44,7 +41,7 @@ static unsigned int clock_seg_id;
 static struct my_clock* clock_shm;
 
 static unsigned int pcb_seg_id;
-static struct pcb** pcb_shm;
+static struct pcb* pcb_shm;
 
 static unsigned int curr_sched_seg_id;
 static struct curr_sched* curr_sched_shm;
@@ -57,20 +54,43 @@ int num_procs_completed = 0;
 int num_procs_generated = 0;
 static int sem_id;
 
-TAILQ_HEAD(tailhead, entry) high_prio_queue =
+TAILQ_HEAD(q1head, entry) high_prio_queue =
     TAILQ_HEAD_INITIALIZER(high_prio_queue);
 
-struct tailhead *headp;  /* Tail queue head. */
+struct q1head *q1headp;
 
 struct entry {
   pid_t pid;
-  TAILQ_ENTRY(entry) entries;  /* Tail queue. */
-} *n1, *n2;
+  TAILQ_ENTRY(entry) entries;
+};
 
-void print_queue() {
+
+TAILQ_HEAD(q2head, entry) med_prio_queue =
+    TAILQ_HEAD_INITIALIZER(med_prio_queue);
+
+struct q2head *q2headp;
+
+TAILQ_HEAD(q3head, entry) low_prio_queue =
+    TAILQ_HEAD_INITIALIZER(low_prio_queue);
+
+struct q3head *q3headp;
+
+void print_queues() {
   struct entry* np;
-  printf("[OSS] Queue: [ ");
-  TAILQ_FOREACH_REVERSE(np, &high_prio_queue, tailhead, entries)
+  printf("[OSS] Queue 1: [ ");
+  TAILQ_FOREACH_REVERSE(np, &high_prio_queue, q1head, entries)
+      printf("%d ", np->pid);
+
+  printf("]\n");
+
+  printf("[OSS] Queue 2: [ ");
+  TAILQ_FOREACH_REVERSE(np, &med_prio_queue, q2head, entries)
+      printf("%d ", np->pid);
+
+  printf("]\n");
+
+  printf("[OSS] Queue 3: [ ");
+  TAILQ_FOREACH_REVERSE(np, &low_prio_queue, q3head, entries)
       printf("%d ", np->pid);
 
   printf("]\n");
@@ -124,6 +144,8 @@ int main(int argc, char* argv[]) {
   }
 
   TAILQ_INIT(&high_prio_queue);
+  TAILQ_INIT(&med_prio_queue);
+  TAILQ_INIT(&low_prio_queue);
 
   FILE* fp;
   fp = fopen(log_file, "w+");
@@ -154,7 +176,8 @@ int main(int argc, char* argv[]) {
 
   curr_sched_seg_id = get_curr_sched_shm();
   curr_sched_shm = attach_to_curr_sched_shm(curr_sched_seg_id);
-  curr_sched_shm->proc_id = -1;
+  // Initialize to a value that won't be equal to a process ID
+  curr_sched_shm->proc_id = -10;
 
   fork_and_exec_child(0);
 
@@ -162,7 +185,11 @@ int main(int argc, char* argv[]) {
   create_at.secs = (rand() % 3) + clock_shm->secs;
   create_at.nano_secs = clock_shm->nano_secs;
   while (1) {
-    update_clock_secs(clock_shm);
+    if (clock_shm->nano_secs >= NANO_SECS_PER_SEC) {
+      clock_shm->secs += 1;
+      clock_shm->nano_secs -= NANO_SECS_PER_SEC;
+    }
+
     int proc_id = get_proc_id();  // -1 if process table is full
     if (num_procs_completed >= MAX_PROCS && is_queue_empty()) {
       break;
@@ -173,16 +200,36 @@ int main(int argc, char* argv[]) {
       create_at.secs = (rand() % 3) + clock_shm->secs;
       create_at.nano_secs = clock_shm->nano_secs;
       clock_shm->nano_secs += 2;
+      continue;
     } else if (!is_queue_empty()) {
-        int scheduled_pid = schedule_process();
+        int scheduled_pid = dispatch_process();
         clock_shm->nano_secs += rand() % 1001;
         sem_wait(sem_id);
-        num_procs_completed++;
-        pcb_shm_ids[scheduled_pid] = 0;
+        if (!pcb_shm[scheduled_pid].ready_to_terminate) {
+          printf("Enqueueing process %d\n", scheduled_pid);
+          enqueue_process(scheduled_pid, 0);
+        } else {
+          num_procs_completed++;
+          printf(
+            "[OSS] [%02d:%010d] Process %d terminated. Number of processes completed %d\n",
+            clock_shm->secs,
+            clock_shm->nano_secs,
+            scheduled_pid,
+            num_procs_completed
+          );
+        }
+        // pcb_shm_ids[scheduled_pid] = 0;
     } else {
       clock_shm->nano_secs += rand() % 1001;
     }
   }
+
+  pid_t pid;
+  while ((pid = waitpid(-1, NULL, 0))) {
+   if (errno == ECHILD) {
+      break;
+   }
+}
 
   free_shm();
   free_queue();
@@ -278,14 +325,16 @@ static void print_required_argument_message(char option) {
 static void fork_and_exec_child(int proc_id) {
   pcb_shm_ids[proc_id] = 1;
   num_procs_generated++;
-      fprintf(
-    stderr,
-    "[OSS] [%02d:%010d] NUM PROCS GENERATED %d\n",
+
+  int priority = 0;
+  printf(
+    "[OSS] [%02d:%010d] Generating process %d and putting it in queue %d\n",
     clock_shm->secs,
     clock_shm->nano_secs,
-    num_procs_generated
+    proc_id,
+    priority
   );
-  enqueue_process(proc_id, 0);
+  enqueue_process(proc_id, priority);
   pid_t pid = fork();
 
   if (pid == -1) {
@@ -346,14 +395,17 @@ static int get_proc_id() {
   return -1;
 }
 
-static void update_clock_secs(struct my_clock* clock) {
-  if (clock->nano_secs >= NANO_SECS_PER_SEC) {
-    clock->secs += 1;
-    clock->nano_secs -= NANO_SECS_PER_SEC;
-  }
-}
+static int dispatch_process() {
+  int priority = 0;
 
-static int schedule_process() {
+  printf(
+    "[OSS] [%02d:%010d] Dispatching process %d from queue %d\n",
+    clock_shm->secs,
+    clock_shm->nano_secs,
+    peek(priority),
+    priority
+  );
+
   int pid = dequeue_process(0);
   if (pid != -1) {
     curr_sched_shm->proc_id = pid;
@@ -367,15 +419,45 @@ static void enqueue_process(int proc_id, int priority) {
   proc->pid = proc_id;
   switch (priority) {
     case 0:
-      printf("[OSS] Enqueue child %d\n", proc_id);
       TAILQ_INSERT_TAIL(&high_prio_queue, proc, entries);
-      print_queue();
+      print_queues();
       break;
     case 1:
+      TAILQ_INSERT_TAIL(&med_prio_queue, proc, entries);
+      print_queues();
       break;
     case 2:
+      TAILQ_INSERT_TAIL(&low_prio_queue, proc, entries);
+      print_queues();
       break;
   }
+}
+
+static int peek(int priority) {
+  int pid = -1;
+  struct entry* np;
+  switch (priority) {
+    case 0:
+      np = TAILQ_FIRST(&high_prio_queue);
+      if (np != NULL) {
+        pid = np->pid;
+      }
+      break;
+    case 1:
+      np = TAILQ_FIRST(&med_prio_queue);
+      if (np != NULL) {
+        pid = np->pid;
+      }
+      break;
+    case 2:
+      np = TAILQ_FIRST(&low_prio_queue);
+      if (np != NULL) {
+        pid = np->pid;
+      }
+      break;
+
+  }
+  return pid;
 }
 
 static int dequeue_process(int priority) {
@@ -386,17 +468,28 @@ static int dequeue_process(int priority) {
       np = TAILQ_FIRST(&high_prio_queue);
       if (np != NULL) {
         pid = np->pid;
-        printf("[OSS] Dequeue child %d\n", pid);
         TAILQ_REMOVE(&high_prio_queue, np, entries);
         free(np);
-        print_queue();
+        print_queues();
       }
       break;
     case 1:
-
+      np = TAILQ_FIRST(&med_prio_queue);
+      if (np != NULL) {
+        pid = np->pid;
+        TAILQ_REMOVE(&med_prio_queue, np, entries);
+        free(np);
+        print_queues();
+      }
       break;
     case 2:
-
+      np = TAILQ_FIRST(&low_prio_queue);
+      if (np != NULL) {
+        pid = np->pid;
+        TAILQ_REMOVE(&low_prio_queue, np, entries);
+        free(np);
+        print_queues();
+      }
       break;
 
   }
@@ -408,10 +501,30 @@ static int is_queue_empty() {
 }
 
 static void free_queue() {
+  struct entry *n1, *n2;
   n1 = TAILQ_FIRST(&high_prio_queue);
   while (n1 != NULL) {
     n2 = TAILQ_NEXT(n1, entries);
     free(n1);
     n1 = n2;
   }
+}
+
+static int schedule_process() {
+  int random_num = rand() % 4;
+  switch (random_num) {
+    case 0:
+      // Process terminates
+      break;
+    case 1:
+      // Process terminates at its time quantum
+      break;
+    case 2:
+      // Process waits for event
+      break;
+    case 3:
+      // Process gets preempted after using [1, 99] of quantum
+      break;
+  }
+  return random_num;
 }
