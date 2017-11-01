@@ -17,6 +17,8 @@
 
 #define FIFTY_MILLISECS 50000000 // 50 milliseconds in nano seconds
 
+int at_least_fifty_millisecs(struct my_clock a);
+
 int main(int argc, char* argv[]) {
   if (argc != 6) {
     fprintf(
@@ -44,12 +46,12 @@ int main(int argc, char* argv[]) {
   do {
     struct my_clock start_time;
     start_time.secs = clock_shm->secs;
-    start_time.nano_secs = clock_shm->nano_secs;
+    start_time.nanosecs = clock_shm->nanosecs;
 
     printf(
       "[USR] [%02d:%010d] Process %d waiting in ready queue\n",
       clock_shm->secs,
-      clock_shm->nano_secs,
+      clock_shm->nanosecs,
       proc_id
     );
 
@@ -66,7 +68,7 @@ int main(int argc, char* argv[]) {
       printf(
         "[USR] [%02d:%010d] Process %d resuming. Scheduled to run for %d nanoseconds\n",
         clock_shm->secs,
-        clock_shm->nano_secs,
+        clock_shm->nanosecs,
         proc_id,
         time_quantum
       );
@@ -75,7 +77,7 @@ int main(int argc, char* argv[]) {
       printf(
         "[USR] [%02d:%010d] Process %d scheduled to run for %d nanoseconds\n",
         clock_shm->secs,
-        clock_shm->nano_secs,
+        clock_shm->nanosecs,
         proc_id,
         time_quantum
       );
@@ -84,7 +86,7 @@ int main(int argc, char* argv[]) {
       printf(
         "[USR] [%02d:%010d] Process %d scheduled to run for %d nanoseconds\n",
         clock_shm->secs,
-        clock_shm->nano_secs,
+        clock_shm->nanosecs,
         proc_id,
         time_quantum
       );
@@ -96,22 +98,25 @@ int main(int argc, char* argv[]) {
       int time_left_to_run = time_quantum - time_ran_for;
       pcb_shm[proc_id].was_interrupted = 1;
       pcb_shm[proc_id].remaining_time = time_left_to_run;
-      time_quantum = rand() % time_quantum;
-      printf(
-        "[USR] [%02d:%010d] Process %d was interrupted by an event after running for %d nanoseconds\n",
-        clock_shm->secs,
-        clock_shm->nano_secs,
-        proc_id,
-        time_ran_for
-      );
+      time_quantum = time_ran_for;
 
       // Add wait time to total system time
       struct my_clock wait_time;
       wait_time.secs = rand() % 6;
-      wait_time.nano_secs = rand() % 1001;
+      wait_time.nanosecs = rand() % 1001;
       pcb_shm[proc_id].total_sys_time = add_clocks(
         pcb_shm[proc_id].total_sys_time,
         wait_time
+      );
+
+      printf(
+        "[USR] [%02d:%010d] Process %d was interrupted by an event for %d:%d after running for %d nanoseconds\n",
+        clock_shm->secs,
+        clock_shm->nanosecs,
+        proc_id,
+        wait_time.secs,
+        wait_time.nanosecs,
+        time_ran_for
       );
     }
 
@@ -121,35 +126,35 @@ int main(int argc, char* argv[]) {
       int time_left_to_run = time_quantum - time_ran_for;
       pcb_shm[proc_id].was_interrupted = 1;
       pcb_shm[proc_id].remaining_time = time_left_to_run;
+      time_quantum = time_ran_for;
       printf(
         "[USR] [%02d:%010d] Process %d was preempted after running for %d nanoseconds\n",
         clock_shm->secs,
-        clock_shm->nano_secs,
+        clock_shm->nanosecs,
         proc_id,
         time_ran_for
       );
     }
 
-    struct my_clock end_time = add_nano_secs_to_clock(*clock_shm, time_quantum);
+    struct my_clock end_time = add_nanosecs_to_clock(*clock_shm, time_quantum);
 
-    int total_sys_time = get_nano_secs_past(end_time, start_time);
+    struct my_clock total_sys_time;
+    total_sys_time = subtract_clocks(end_time, start_time);
 
-    pcb_shm[proc_id].total_sys_time = add_nano_secs_to_clock(
-                                         pcb_shm[proc_id].total_sys_time,
-                                         total_sys_time
-                                       );
+    pcb_shm[proc_id].total_sys_time = add_clocks(
+                                        pcb_shm[proc_id].total_sys_time,
+                                        total_sys_time
+                                      );
 
-    pcb_shm[proc_id].total_cpu_time = add_nano_secs_to_clock(
-                                         pcb_shm[proc_id].total_cpu_time,
-                                         time_quantum
-                                       );
+    pcb_shm[proc_id].total_cpu_time = add_nanosecs_to_clock(
+                                        pcb_shm[proc_id].total_cpu_time,
+                                        time_quantum
+                                      );
 
     pcb_shm[proc_id].last_burst_time = time_quantum;
 
-    int accumulated_cpu_time = get_nano_secs(pcb_shm[proc_id].total_cpu_time);
-
     // AND proccess is supposed to execute normally
-    if (accumulated_cpu_time >= FIFTY_MILLISECS &&
+    if (at_least_fifty_millisecs(pcb_shm[proc_id].total_cpu_time) &&
         curr_sched_shm->rand_sched_num == 1) {
       is_process_complete = rand() % 2;
       if (is_process_complete) {
@@ -157,7 +162,7 @@ int main(int argc, char* argv[]) {
         printf(
           "[USR] [%02d:%010d] Process %d ready to terminate\n",
           clock_shm->secs,
-          clock_shm->nano_secs,
+          clock_shm->nanosecs,
           proc_id
         );
       }
@@ -171,7 +176,7 @@ int main(int argc, char* argv[]) {
       printf(
         "[USR] [%02d:%010d] Process %d NOT ready to terminate\n",
         clock_shm->secs,
-        clock_shm->nano_secs,
+        clock_shm->nanosecs,
         proc_id
       );
     }
@@ -182,4 +187,12 @@ int main(int argc, char* argv[]) {
   detach_from_curr_sched_shm(curr_sched_shm);
 
   return EXIT_SUCCESS;
+}
+
+int at_least_fifty_millisecs(struct my_clock a) {
+  if (a.secs > 0 || a.nanosecs >= FIFTY_MILLISECS) {
+    return 1;
+  } else {
+    return 0;
+  }
 }

@@ -20,7 +20,7 @@ struct my_mlfq {
  * CONSTANTS *
  *************/
 
-#define MY_TIMESLICE 100000000; // 100 milliseconds in nano seconds
+#define MY_TIMESLICE 100000000; // 100 milliseconds in nanoseconds
 #define ALPHA = 1;
 #define BETA = 2;
 
@@ -46,5 +46,6 @@ static int dequeue_process(int priority);
 static int is_queue_empty();
 static int peek(int priority);
 static int get_rand_sched_num();
+static void print_report();
 
 #endif

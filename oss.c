@@ -46,13 +46,15 @@ static struct pcb* pcb_shm;
 static unsigned int curr_sched_seg_id;
 static struct curr_sched* curr_sched_shm;
 
-static char pcb_shm_ids[MAX_RUNNING_PROCS];
+static char pcb_shm_ids[MAX_PROCS];
 
 static struct my_clock last_created_at;
 
 int num_procs_completed = 0;
 int num_procs_generated = 0;
 static int sem_id;
+
+FILE* fp;
 
 TAILQ_HEAD(q1head, entry) high_prio_queue =
     TAILQ_HEAD_INITIALIZER(high_prio_queue);
@@ -77,23 +79,23 @@ struct q3head *q3headp;
 
 void print_queues() {
   struct entry* np;
-  printf("[OSS] Queue 1: [ ");
+  fprintf(fp, "[OSS] Queue 1: [ ");
   TAILQ_FOREACH_REVERSE(np, &high_prio_queue, q1head, entries)
-      printf("%d ", np->pid);
+      fprintf(fp, "%d ", np->pid);
 
-  printf("]\n");
+  fprintf(fp, "]\n");
 
-  printf("[OSS] Queue 2: [ ");
+  fprintf(fp, "[OSS] Queue 2: [ ");
   TAILQ_FOREACH_REVERSE(np, &med_prio_queue, q2head, entries)
-      printf("%d ", np->pid);
+      fprintf(fp, "%d ", np->pid);
 
-  printf("]\n");
+  fprintf(fp, "]\n");
 
-  printf("[OSS] Queue 3: [ ");
+  fprintf(fp, "[OSS] Queue 3: [ ");
   TAILQ_FOREACH_REVERSE(np, &low_prio_queue, q3head, entries)
-      printf("%d ", np->pid);
+      fprintf(fp, "%d ", np->pid);
 
-  printf("]\n");
+  fprintf(fp, "]\n");
 }
 
 static void free_queue();
@@ -136,10 +138,17 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
+  fp = fopen(log_file, "w+");
+
+  if (fp == NULL) {
+    perror("Failed to open log file");
+    exit(EXIT_FAILURE);
+  }
+
   srand(time(NULL));
 
   int k;
-  for (k = 0; k < MAX_RUNNING_PROCS; k++) {
+  for (k = 0; k < MAX_PROCS; k++) {
     pcb_shm_ids[k] = 0;
   }
 
@@ -171,7 +180,7 @@ int main(int argc, char* argv[]) {
   // Initialize clock to 1 second to simulate overhead
   clock_shm->secs = 1;
 
-  pcb_seg_id = get_pcb_shm(MAX_RUNNING_PROCS);
+  pcb_seg_id = get_pcb_shm(MAX_PROCS);
   pcb_shm = attach_to_pcb_shm(pcb_seg_id);
 
   curr_sched_seg_id = get_curr_sched_shm();
@@ -183,11 +192,11 @@ int main(int argc, char* argv[]) {
 
   struct my_clock create_at;
   create_at.secs = (rand() % 3) + clock_shm->secs;
-  create_at.nano_secs = clock_shm->nano_secs;
+  create_at.nanosecs = clock_shm->nanosecs;
   while (1) {
-    if (clock_shm->nano_secs >= NANO_SECS_PER_SEC) {
+    if (clock_shm->nanosecs >= NANOSECS_PER_SEC) {
       clock_shm->secs += 1;
-      clock_shm->nano_secs -= NANO_SECS_PER_SEC;
+      clock_shm->nanosecs -= NANOSECS_PER_SEC;
     }
 
     int proc_id = get_proc_id();  // -1 if process table is full
@@ -196,44 +205,48 @@ int main(int argc, char* argv[]) {
     } else if (is_past_last_created(create_at) && proc_id != -1 && num_procs_generated < MAX_PROCS) {
       fork_and_exec_child(proc_id);
       last_created_at.secs = clock_shm->secs;
-      last_created_at.nano_secs = clock_shm->nano_secs;
+      last_created_at.nanosecs = clock_shm->nanosecs;
       create_at.secs = (rand() % 3) + clock_shm->secs;
-      create_at.nano_secs = clock_shm->nano_secs;
-      clock_shm->nano_secs += 2;
+      create_at.nanosecs = clock_shm->nanosecs;
+      clock_shm->nanosecs += 2;
       continue;
     } else if (!is_queue_empty()) {
         int scheduled_pid = dispatch_process();
-        clock_shm->nano_secs += rand() % 1001;
+        clock_shm->nanosecs += rand() % 1001; // Scheduling Overhead
         sem_wait(sem_id);
-        printf(
+        fprintf(
+          fp,
           "[OSS] [%02d:%010d] Process %d ran for %d nanoseconds during last burst.\n",
           clock_shm->secs,
-          clock_shm->nano_secs,
+          clock_shm->nanosecs,
           scheduled_pid,
           pcb_shm[scheduled_pid].last_burst_time
         );
+        clock_shm->nanosecs += pcb_shm[scheduled_pid].last_burst_time;
         if (!pcb_shm[scheduled_pid].ready_to_terminate) {
-          printf(
+          fprintf(
+            fp,
             "[OSS] [%02d:%010d] Putting process %d in queue %d.\n",
             clock_shm->secs,
-            clock_shm->nano_secs,
+            clock_shm->nanosecs,
             scheduled_pid,
             0
           );
           enqueue_process(scheduled_pid, 0);
         } else {
           num_procs_completed++;
-          printf(
+          fprintf(
+            fp,
             "[OSS] [%02d:%010d] Process %d terminated. Number of processes completed %d\n",
             clock_shm->secs,
-            clock_shm->nano_secs,
+            clock_shm->nanosecs,
             scheduled_pid,
             num_procs_completed
           );
         }
         // pcb_shm_ids[scheduled_pid] = 0;
     } else {
-      clock_shm->nano_secs += rand() % 1001;
+      clock_shm->nanosecs += rand() % 1001;
     }
   }
 
@@ -245,13 +258,7 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  /*----------------------------*
-   | TODO: Print report         |
-   |----------------------------|
-   | - Average turnaround time  |
-   | - Average wait time        |
-   | - How long CPU was idle    |
-   *----------------------------*/
+  print_report();
 
   free_shm();
   free_queue();
@@ -349,10 +356,11 @@ static void fork_and_exec_child(int proc_id) {
   num_procs_generated++;
 
   int priority = 0;
-  printf(
+  fprintf(
+    fp,
     "[OSS] [%02d:%010d] Generating process %d and putting it in queue %d\n",
     clock_shm->secs,
-    clock_shm->nano_secs,
+    clock_shm->nanosecs,
     proc_id,
     priority
   );
@@ -393,8 +401,8 @@ static void fork_and_exec_child(int proc_id) {
 
 static int is_past_last_created(struct my_clock create_at) {
   int sec_past = create_at.secs - clock_shm->secs;
-  int ns_past = create_at.nano_secs - clock_shm->nano_secs;
-  int total_past = ns_past + (sec_past * NANO_SECS_PER_SEC);
+  int ns_past = create_at.nanosecs - clock_shm->nanosecs;
+  int total_past = ns_past + (sec_past * NANOSECS_PER_SEC);
   if (total_past < 0) {
     return 1;
   } else {
@@ -409,7 +417,7 @@ static int is_past_last_created(struct my_clock create_at) {
  */
 static int get_proc_id() {
   int proc_id;
-  for (proc_id = 0; proc_id < MAX_RUNNING_PROCS; proc_id++) {
+  for (proc_id = 0; proc_id < MAX_PROCS; proc_id++) {
     if (pcb_shm_ids[proc_id] != 1) {
       return proc_id;
     }
@@ -420,10 +428,11 @@ static int get_proc_id() {
 static int dispatch_process() {
   int priority = 0;
 
-  printf(
+  fprintf(
+    fp,
     "[OSS] [%02d:%010d] Dispatching process %d from queue %d\n",
     clock_shm->secs,
-    clock_shm->nano_secs,
+    clock_shm->nanosecs,
     peek(priority),
     priority
   );
@@ -554,6 +563,53 @@ static int get_rand_sched_num() {
     i++;
   }
   return rand_sched_num;
+}
+
+/*----------------------------*
+ | TODO: Print report         |
+ |----------------------------|
+ | - Average turnaround time  |
+ | - Average wait time        |
+ | - How long CPU was idle    |
+ *----------------------------*/
+static void print_report() {
+  struct my_clock total_turnaround_time;
+  total_turnaround_time.secs = 0;
+  total_turnaround_time.nanosecs = 0;
+  struct my_clock total_cpu_time;
+  // printf("\n\nGenerating report...\n");
+  int i;
+  for (i = 0; i < MAX_PROCS; i++) {
+    // printf("Process %d | Total System Time %d:%d | Total CPU Time %d:%d \n", i, pcb_shm[i].total_sys_time.secs, pcb_shm[i].total_sys_time.nanosecs, pcb_shm[i].total_cpu_time.secs, pcb_shm[i].total_cpu_time.nanosecs);
+    // printf("%d:%d + %d:%d = ", total_turnaround_time.secs, total_turnaround_time.nanosecs, pcb_shm[i].total_sys_time.secs, pcb_shm[i].total_sys_time.nanosecs);
+    total_turnaround_time = add_clocks(
+                              total_turnaround_time,
+                              pcb_shm[i].total_sys_time
+                            );
+    // printf("%d:%d\n", total_turnaround_time.secs, total_turnaround_time.nanosecs);
+    total_cpu_time = add_clocks(
+                       total_cpu_time,
+                       pcb_shm[i].total_cpu_time
+                     );
+  }
+  // printf("\nTotal turnaround time %d:%d\n\n", total_turnaround_time.secs, total_turnaround_time.nanosecs);
+  struct my_clock avg_turnaround_time;
+  avg_turnaround_time = divide_clock(total_turnaround_time, MAX_PROCS);
+  struct my_clock avg_cpu_time;
+  avg_cpu_time = divide_clock(total_cpu_time, MAX_PROCS);
+  struct my_clock avg_wait_time;
+  avg_wait_time = subtract_clocks(avg_turnaround_time, avg_cpu_time);
+
+  char report_title[33] = "Operating System Simulator Report";
+  fprintf(fp, "\n%s\n", report_title);
+  int j = 0;
+  while (report_title[j] != '\0') {
+    fprintf(fp, "-");
+    j++;
+  }
+  fprintf(fp, "\n");
+  fprintf(fp, "Average Turnaround Time: %d:%d \n", avg_turnaround_time.secs, avg_turnaround_time.nanosecs);
+  fprintf(fp, "Average Wait Time: %d:%d \n", avg_wait_time.secs, avg_wait_time.nanosecs);
 }
 
 /**
